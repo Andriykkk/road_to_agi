@@ -1,0 +1,25 @@
+# Data preparation configuration
+# This file controls dataset preprocessing and caching
+
+dataset: "c4" # Dataset name (c4, openwebtext, etc.)
+dataset_config: "en" # Dataset configuration
+tokenizer: "gpt2" # Tokenizer to use for all models
+cache_dir: "data_cache" # Directory to cache preprocessed data
+use_preprocessed: true # Whether to use preprocessed cached data
+
+# How much data to preprocess and cache (once)
+# This should be the maximum any model will need
+preprocess_tokens_billions: 0.3 # Process 300B tokens from C4
+max_sequence_length: 1024 # Maximum sequence length for preprocessing
+
+# Multiprocessing settings for tokenization
+max_processes: null # null means use all CPU cores, or set specific number
+batch_size: 1000 # Batch size for multiprocessing tokenization
+
+# Data splits
+train_split: "train"
+validation_split: "validation"
+validation_ratio: 0.1 # What fraction of preprocessed data to use for validation
+
+# All model-specific settings (target tokens, batch sizes, hyperparameters)
+# are in models.yaml - each model samples from this preprocessed dataset

@@ -1,0 +1,30 @@
+# Training infrastructure configuration
+# This file contains only general training settings and infrastructure
+
+# Device and distributed training
+device: "auto"  # "auto", "cuda", "cpu", or specific device
+mixed_precision: true  # Use automatic mixed precision
+compile_model: false  # Use torch.compile for optimization
+
+# Checkpointing and resuming
+checkpoint_dir: "checkpoints"
+resume_from_checkpoint: null  # Path to checkpoint to resume from
+save_total_limit: 3  # Keep only last N checkpoints
+
+# Logging and monitoring
+use_wandb: true  # Use Weights & Biases for logging
+wandb_project: "scaling-laws-experiment"
+wandb_entity: null  # Your wandb username/team
+log_dir: "logs"
+
+# Evaluation settings
+eval_accumulation_steps: null  # Number of steps to accumulate eval batches
+eval_delay: 0  # Delay evaluation for N steps
+include_inputs_for_metrics: false
+
+# Early stopping
+early_stopping_patience: null  # Stop if no improvement for N eval steps
+early_stopping_threshold: 0.0  # Minimum improvement threshold
+
+# All model-specific hyperparameters (learning rates, batch sizes, steps, etc.)
+# are now in models.yaml for centralized configuration per model size

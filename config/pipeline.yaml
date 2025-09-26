@@ -1,0 +1,40 @@
+# Training pipeline configuration
+# Defines which models to train and what training steps to execute
+
+# Models to train (can specify multiple or single)
+models:
+  - "nano"
+  # - "micro"
+  # - "tiny"
+  # - "small"
+  # - "medium"
+  # - "large"
+
+# Configuration file paths
+model_config: "config/models.yaml"
+data_config: "config/data.yaml"
+training_config: "config/training.yaml"
+
+# Training pipeline steps (executed in order)
+steps:
+  - name: "pretraining"
+    module: "src.training.pretraining_regression"
+    function: "run_pretraining"
+
+  # Future steps can be added here:
+  # - name: "fine_tuning"
+  #   module: "src.training.fine_tuning"
+  #   function: "run_fine_tuning"
+  #
+  # - name: "reinforcement_learning"
+  #   module: "src.training.reinforcement_learning"
+  #   function: "run_rl_training"
+
+# Output and logging settings
+results_dir: "results"
+logs_dir: "logs"
+checkpoints_dir: "checkpoints"
+
+# Experiment metadata
+experiment_name: "scaling_laws_experiment"
+description: "Training models of different sizes to study scaling laws"
