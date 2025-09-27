@@ -1,0 +1,3 @@
+[ ] make script that calculate parameters of models
+[ ] make script that calculate speed of training and memory for training
+[ ] check what models to train and train them

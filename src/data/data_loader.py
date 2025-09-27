@@ -115,6 +115,9 @@ class ChunkedC4Dataset(Dataset):
         pattern = os.path.join(self.cache_dir, f"{self.cache_prefix}_chunk_*.npz")
         chunk_files = sorted(glob.glob(pattern))
         
+        print(f"🔍 Looking for chunks with pattern: {pattern}")
+        print(f"🔍 Found {len(chunk_files)} chunk files")
+        
         self.chunk_files = []
         self.chunk_sizes = []
         self.total_tokens = 0
@@ -127,8 +130,9 @@ class ChunkedC4Dataset(Dataset):
                     self.chunk_files.append(chunk_file)
                     self.chunk_sizes.append(chunk_size)
                     self.total_tokens += chunk_size
-            except:
-                print(f"⚠️  Error reading chunk {chunk_file}, skipping")
+                    print(f"📁 Found chunk: {os.path.basename(chunk_file)} ({chunk_size:,} tokens)")
+            except Exception as e:
+                print(f"⚠️  Error reading chunk {chunk_file}: {e}")
                 continue
     
     def _cleanup_old_chunks(self):

@@ -5,6 +5,7 @@ Pretraining module for language modeling (next token prediction)
 import os
 import json
 import time
+import math
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -18,6 +19,7 @@ import wandb
 from src.models.model_factory import create_model, load_model_config
 from src.data.data_loader import create_full_dataset
 from src.data.sampler import create_sampled_dataset
+
 
 def load_configs(model_config_path, data_config_path, training_config_path):
     """Load all configuration files"""
@@ -45,26 +47,36 @@ def setup_logging(model_size, training_config, logs_dir):
 
 def create_optimizer_and_scheduler(model, model_config, total_steps):
     """Create optimizer and learning rate scheduler"""
+    base_lr = float(model_config['learning_rate'])
+    warmup_start_lr_ratio = model_config.get('warmup_start_lr_ratio', 0.1)
+    
+    # Start optimizer with warmup start LR
     optimizer = AdamW(
         model.parameters(),
-        lr=float(model_config['learning_rate']),
+        lr=base_lr * warmup_start_lr_ratio,
         weight_decay=float(model_config.get('weight_decay', 0.1))
     )
     
     scheduler_type = model_config.get('lr_scheduler', 'cosine')
     warmup_steps = int(model_config.get('warmup_steps', 1000))
+    min_lr_ratio = model_config.get('min_lr_ratio', 0.1)
     
     if scheduler_type == 'cosine':
-        scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps)
+        # Cosine annealing from peak LR to min LR after warmup
+        min_lr = base_lr * min_lr_ratio
+        scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=min_lr)
     else:
         scheduler = None
         
     return optimizer, scheduler, warmup_steps
 
-def warmup_lr(optimizer, step, warmup_steps, base_lr):
-    """Apply learning rate warmup"""
+def warmup_lr(optimizer, step, warmup_steps, base_lr, warmup_start_lr_ratio=0.1):
+    """Apply learning rate warmup from start_ratio to peak LR"""
     if step < warmup_steps:
-        lr = float(base_lr) * (step + 1) / warmup_steps
+        start_lr = float(base_lr) * warmup_start_lr_ratio
+        target_lr = float(base_lr)
+        progress = (step + 1) / warmup_steps
+        lr = start_lr + (target_lr - start_lr) * progress
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -169,6 +181,38 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         
         model_config = model_configs['models'][model_size]
         
+        # Calculate training steps from target tokens and batch size
+        target_tokens = int(model_config['target_tokens_billions'] * 1e9)
+        max_seq_len = model_config['architecture']['max_seq_len']
+        batch_size = model_config['batch_size']
+        gradient_accumulation_steps = model_config.get('gradient_accumulation_steps', 1)
+        
+        tokens_per_step = max_seq_len * batch_size * gradient_accumulation_steps
+        calculated_steps = math.ceil(target_tokens / tokens_per_step)
+        
+        print(f"🧮 Calculated training steps: {calculated_steps:,}")
+        print(f"   Target tokens: {target_tokens:,} ({model_config['target_tokens_billions']}B)")
+        print(f"   Tokens per step: {tokens_per_step:,} (seq_len={max_seq_len} × batch={batch_size} × accum={gradient_accumulation_steps})")
+        
+        model_config['max_steps'] = calculated_steps
+        
+        # Calculate warmup steps from percentage
+        warmup_percent = model_config.get('warmup_percent', 10)
+        warmup_steps = int(calculated_steps * warmup_percent / 100)
+        model_config['warmup_steps'] = warmup_steps
+        
+        print(f"   Warmup steps: {warmup_steps:,} ({warmup_percent}% of training)")
+        
+        # Calculate learning rate schedule parameters
+        base_lr = float(model_config['learning_rate'])
+        warmup_start_lr_ratio = model_config.get('warmup_start_lr_ratio', 0.1)
+        min_lr_ratio = model_config.get('min_lr_ratio', 0.1)
+        
+        warmup_start_lr = base_lr * warmup_start_lr_ratio
+        min_lr = base_lr * min_lr_ratio
+        
+        print(f"   LR schedule: {warmup_start_lr:.2e} → {base_lr:.2e} → {min_lr:.2e}")
+        
         # Setup device
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device}")
@@ -230,6 +274,7 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         step = 0
         running_loss = 0
         best_val_loss = float('inf')
+        gradient_accumulation_steps = model_config.get('gradient_accumulation_steps', 1)
         
         # Timing
         training_start_time = time.time()
@@ -255,98 +300,122 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         # Create progress bar for entire training
         progress_bar = tqdm(total=max_steps, desc=f"Training {model_size}", unit="step")
         
+        # Gradient accumulation tracking
+        accumulation_step = 0
+        accumulated_loss = 0
+        
         for epoch in range(1000):  # Large number, will break by steps
             for batch in train_dataloader:
                 if step >= max_steps:
                     break
                 
-                step_start_time = time.time()
+                # Only start timing on actual optimization steps
+                if accumulation_step == 0:
+                    step_start_time = time.time()
                 
-                # Warmup learning rate
-                if step < warmup_steps:
-                    warmup_lr(optimizer, step, warmup_steps, model_config['learning_rate'])
-                
-                # Training step
-                optimizer.zero_grad()
+                # Training forward pass
                 loss, accuracy = train_step(model, batch, device)
+                
+                # Scale loss by accumulation steps
+                loss = loss / gradient_accumulation_steps
                 loss.backward()
                 
-                # Gradient clipping
-                max_grad_norm = float(model_config.get('max_grad_norm', 1.0))
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                accumulated_loss += loss.item()
+                accumulation_step += 1
                 
-                optimizer.step()
-                if scheduler and step >= warmup_steps:
-                    scheduler.step()
-                
-                running_loss += loss.item()
-                step += 1
-                
-                # Track step time
-                step_time = time.time() - step_start_time
-                step_times.append(step_time)
-                
-                # Update progress bar
-                progress_bar.update(1)
-                progress_bar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'acc': f'{accuracy:.4f}',
-                    'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
-                })
-                
-                # Logging
-                log_every = int(model_config.get('log_every', 100))
-                if step % log_every == 0:
-                    avg_loss = running_loss / log_every
+                # Perform optimization step when accumulation is complete
+                if accumulation_step == gradient_accumulation_steps:
+                    # Warmup learning rate
+                    if step < warmup_steps:
+                        warmup_lr(optimizer, step, warmup_steps, 
+                                 model_config['learning_rate'], 
+                                 model_config.get('warmup_start_lr_ratio', 0.1))
                     
-                    log_data = {
-                        'step': step,
-                        'train_loss': avg_loss,
-                        'train_accuracy': accuracy,
-                        'learning_rate': optimizer.param_groups[0]['lr']
-                    }
+                    # Gradient clipping
+                    max_grad_norm = float(model_config.get('max_grad_norm', 1.0))
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                     
-                    if use_wandb:
-                        wandb.log(log_data)
+                    # Optimization step
+                    optimizer.step()
+                    optimizer.zero_grad()
                     
-                    # Don't print during training - tqdm progress bar shows this
-                    running_loss = 0
-                
-                # Evaluation
-                eval_every = int(model_config.get('eval_every', 1000))
-                if step % eval_every == 0:
-                    progress_bar.write("Running evaluation...")
-                    val_loss, val_accuracy = evaluate_model(model, val_dataloader, device, max_eval_steps=100)
+                    if scheduler and step >= warmup_steps:
+                        scheduler.step()
                     
-                    eval_data = {
-                        'step': step,
-                        'val_loss': val_loss,
-                        'val_accuracy': val_accuracy
-                    }
+                    # Track metrics (accumulated loss is already averaged)
+                    running_loss += accumulated_loss
+                    step += 1
                     
-                    if use_wandb:
-                        wandb.log(eval_data)
+                    # Track step time (only for actual optimization steps)
+                    step_time = time.time() - step_start_time
+                    step_times.append(step_time)
                     
-                    progress_bar.write(f"Validation: Loss={val_loss:.4f}, Acc={val_accuracy:.4f}")
+                    # Update progress bar
+                    progress_bar.update(1)
+                    progress_bar.set_postfix({
+                        'loss': f'{accumulated_loss:.4f}',
+                        'acc': f'{accuracy:.4f}',
+                        'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
+                    })
                     
-                    # Save metrics
-                    training_metrics['steps'].append(step)
-                    training_metrics['train_losses'].append(avg_loss)
-                    training_metrics['val_losses'].append(val_loss)
-                    training_metrics['train_accuracies'].append(accuracy)
-                    training_metrics['val_accuracies'].append(val_accuracy)
+                    # Logging
+                    log_every = int(model_config.get('log_every', 100))
+                    if step % log_every == 0:
+                        avg_loss = running_loss / log_every
+                        
+                        log_data = {
+                            'step': step,
+                            'train_loss': avg_loss,
+                            'train_accuracy': accuracy,
+                            'learning_rate': optimizer.param_groups[0]['lr']
+                        }
+                        
+                        if use_wandb:
+                            wandb.log(log_data)
+                        
+                        # Don't print during training - tqdm progress bar shows this
+                        running_loss = 0
                     
-                    # Save best model
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        save_checkpoint(model, optimizer, scheduler, step, val_loss, 
-                                      checkpoints_dir, f"{model_size}_best")
-                
-                # Regular checkpoint saving
-                save_every = int(model_config.get('save_every', 5000))
-                if step % save_every == 0:
-                    save_checkpoint(model, optimizer, scheduler, step, loss.item(), 
-                                  checkpoints_dir, model_size)
+                    # Evaluation
+                    eval_every = int(model_config.get('eval_every', 1000))
+                    if step % eval_every == 0:
+                        progress_bar.write("Running evaluation...")
+                        val_loss, val_accuracy = evaluate_model(model, val_dataloader, device, max_eval_steps=100)
+                        
+                        eval_data = {
+                            'step': step,
+                            'val_loss': val_loss,
+                            'val_accuracy': val_accuracy
+                        }
+                        
+                        if use_wandb:
+                            wandb.log(eval_data)
+                        
+                        progress_bar.write(f"Validation: Loss={val_loss:.4f}, Acc={val_accuracy:.4f}")
+                        
+                        # Save metrics (use avg_loss if available, otherwise accumulated_loss)
+                        current_train_loss = avg_loss if step % log_every == 0 else accumulated_loss
+                        training_metrics['steps'].append(step)
+                        training_metrics['train_losses'].append(current_train_loss)
+                        training_metrics['val_losses'].append(val_loss)
+                        training_metrics['train_accuracies'].append(accuracy)
+                        training_metrics['val_accuracies'].append(val_accuracy)
+                        
+                        # Save best model
+                        if val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            save_checkpoint(model, optimizer, scheduler, step, val_loss, 
+                                          checkpoints_dir, f"{model_size}_best")
+                    
+                    # Regular checkpoint saving
+                    save_every = int(model_config.get('save_every', 5000))
+                    if step % save_every == 0:
+                        save_checkpoint(model, optimizer, scheduler, step, accumulated_loss, 
+                                      checkpoints_dir, model_size)
+                    
+                    # Reset accumulation
+                    accumulation_step = 0
+                    accumulated_loss = 0
             
             if step >= max_steps:
                 break
