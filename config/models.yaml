@@ -19,14 +19,14 @@ models:
     # Training hyperparameters
     learning_rate: 3e-4
     batch_size: 8
-    gradient_accumulation_steps: 4  # Effective batch size = 8 × 4 = 32
-    
+    gradient_accumulation_steps: 4 # Effective batch size = 8 × 4 = 32
+
     # Learning rate schedule (percentages of total training steps)
-    warmup_percent: 10  # Warmup for 10% of training
+    warmup_percent: 10 # Warmup for 10% of training
     lr_scheduler: "cosine"
-    warmup_start_lr_ratio: 0.1  # Start warmup at 10% of peak LR
-    min_lr_ratio: 0.1  # End at 10% of peak LR
-    
+    warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+    min_lr_ratio: 0.1 # End at 10% of peak LR
+
     optimizer: "adamw"
     weight_decay: 0.1
     max_grad_norm: 1.0

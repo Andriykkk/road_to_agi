@@ -31,15 +31,38 @@ def load_configs(model_config_path, data_config_path, training_config_path):
         training_config = yaml.safe_load(f)
     return model_config, data_config, training_config
 
-def setup_logging(model_size, training_config, logs_dir):
+def setup_logging(model_size, model_config, training_config, logs_dir):
     """Setup logging with wandb"""
     if training_config.get('use_wandb', True):
         run_name = f"{model_size}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Create comprehensive config for wandb
+        wandb_config = {
+            'model_size': model_size,
+            'model_params': model_config.get('params', 0),
+            'target_tokens_billions': model_config.get('target_tokens_billions'),
+            'max_steps': model_config.get('max_steps'),
+            'learning_rate': model_config.get('learning_rate'),
+            'batch_size': model_config.get('batch_size'),
+            'gradient_accumulation_steps': model_config.get('gradient_accumulation_steps', 1),
+            'effective_batch_size': model_config.get('batch_size', 32) * model_config.get('gradient_accumulation_steps', 1),
+            'max_seq_len': model_config['architecture']['max_seq_len'],
+            'n_layers': model_config['architecture']['n_layers'],
+            'n_heads': model_config['architecture']['n_heads'],
+            'd_model': model_config['architecture']['d_model'],
+            'warmup_percent': model_config.get('warmup_percent'),
+            'warmup_steps': model_config.get('warmup_steps'),
+            'lr_scheduler': model_config.get('lr_scheduler'),
+            'optimizer': model_config.get('optimizer'),
+            'weight_decay': model_config.get('weight_decay')
+        }
+        
         wandb.init(
             project=training_config.get('wandb_project', 'scaling-laws'),
             entity=training_config.get('wandb_entity'),
             name=run_name,
             tags=[model_size, 'pretraining'],
+            config=wandb_config,
             dir=logs_dir
         )
         return True
@@ -218,7 +241,7 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         print(f"Using device: {device}")
         
         # Setup logging
-        use_wandb = setup_logging(model_size, training_config, logs_dir)
+        use_wandb = setup_logging(model_size, model_config, training_config, logs_dir)
         
         # Create model
         print("Creating model...")
@@ -272,7 +295,6 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         model.train()
         
         step = 0
-        running_loss = 0
         best_val_loss = float('inf')
         gradient_accumulation_steps = model_config.get('gradient_accumulation_steps', 1)
         
@@ -303,122 +325,119 @@ def run_pretraining(model_size, model_config_path, data_config_path, training_co
         # Gradient accumulation tracking
         accumulation_step = 0
         accumulated_loss = 0
+        step_start_time = None
         
-        for epoch in range(1000):  # Large number, will break by steps
-            for batch in train_dataloader:
-                if step >= max_steps:
-                    break
+        # Training loop - iterate through data until we reach max_steps
+        data_iter = iter(train_dataloader)
+        
+        while step < max_steps:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                # Reset dataloader when we reach the end
+                data_iter = iter(train_dataloader)
+                batch = next(data_iter)
+            
+            # Start timing when we begin a new optimization step
+            if accumulation_step == 0:
+                step_start_time = time.time()
+            
+            # Training forward pass
+            loss, accuracy = train_step(model, batch, device)
+            
+            # Scale loss by accumulation steps
+            loss = loss / gradient_accumulation_steps
+            loss.backward()
+            
+            accumulated_loss += loss.item()
+            accumulation_step += 1
+            
+            # Perform optimization step when accumulation is complete
+            if accumulation_step == gradient_accumulation_steps:
+                # Warmup learning rate
+                if step < warmup_steps:
+                    warmup_lr(optimizer, step, warmup_steps, 
+                             model_config['learning_rate'], 
+                             model_config.get('warmup_start_lr_ratio', 0.1))
                 
-                # Only start timing on actual optimization steps
-                if accumulation_step == 0:
-                    step_start_time = time.time()
+                # Gradient clipping
+                max_grad_norm = float(model_config.get('max_grad_norm', 1.0))
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                 
-                # Training forward pass
-                loss, accuracy = train_step(model, batch, device)
+                # Optimization step
+                optimizer.step()
+                optimizer.zero_grad()
                 
-                # Scale loss by accumulation steps
-                loss = loss / gradient_accumulation_steps
-                loss.backward()
+                if scheduler and step >= warmup_steps:
+                    scheduler.step()
                 
-                accumulated_loss += loss.item()
-                accumulation_step += 1
+                step += 1
                 
-                # Perform optimization step when accumulation is complete
-                if accumulation_step == gradient_accumulation_steps:
-                    # Warmup learning rate
-                    if step < warmup_steps:
-                        warmup_lr(optimizer, step, warmup_steps, 
-                                 model_config['learning_rate'], 
-                                 model_config.get('warmup_start_lr_ratio', 0.1))
-                    
-                    # Gradient clipping
-                    max_grad_norm = float(model_config.get('max_grad_norm', 1.0))
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                    
-                    # Optimization step
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    
-                    if scheduler and step >= warmup_steps:
-                        scheduler.step()
-                    
-                    # Track metrics (accumulated loss is already averaged)
-                    running_loss += accumulated_loss
-                    step += 1
-                    
-                    # Track step time (only for actual optimization steps)
+                # Track step time (only for actual optimization steps)
+                if step_start_time is not None:
                     step_time = time.time() - step_start_time
                     step_times.append(step_time)
+                    steps_per_second = 1.0 / step_time if step_time > 0 else 0
+                else:
+                    step_time = 0
+                    steps_per_second = 0
+                
+                # Update progress bar
+                progress_bar.update(1)
+                progress_bar.set_postfix({
+                    'loss': f'{accumulated_loss:.4f}',
+                    'acc': f'{accuracy:.4f}',
+                    'lr': f'{optimizer.param_groups[0]["lr"]:.2e}',
+                    'step/s': f'{steps_per_second:.2f}'
+                })
+                
+                # Log training metrics every step to wandb
+                if use_wandb:
+                    wandb.log({
+                        'train_loss': accumulated_loss,
+                        'train_accuracy': accuracy,
+                        'learning_rate': optimizer.param_groups[0]['lr'],
+                        'step_time_seconds': step_time,
+                        'steps_per_second': steps_per_second
+                    }, step=step)
+                
+                # Run evaluation if needed (less frequent)
+                eval_every = int(model_config.get('eval_every', 1000))
+                if step % eval_every == 0:
+                    progress_bar.write("Running evaluation...")
+                    val_loss, val_accuracy = evaluate_model(model, val_dataloader, device, max_eval_steps=100)
                     
-                    # Update progress bar
-                    progress_bar.update(1)
-                    progress_bar.set_postfix({
-                        'loss': f'{accumulated_loss:.4f}',
-                        'acc': f'{accuracy:.4f}',
-                        'lr': f'{optimizer.param_groups[0]["lr"]:.2e}'
-                    })
-                    
-                    # Logging
-                    log_every = int(model_config.get('log_every', 100))
-                    if step % log_every == 0:
-                        avg_loss = running_loss / log_every
-                        
-                        log_data = {
-                            'step': step,
-                            'train_loss': avg_loss,
-                            'train_accuracy': accuracy,
-                            'learning_rate': optimizer.param_groups[0]['lr']
-                        }
-                        
-                        if use_wandb:
-                            wandb.log(log_data)
-                        
-                        # Don't print during training - tqdm progress bar shows this
-                        running_loss = 0
-                    
-                    # Evaluation
-                    eval_every = int(model_config.get('eval_every', 1000))
-                    if step % eval_every == 0:
-                        progress_bar.write("Running evaluation...")
-                        val_loss, val_accuracy = evaluate_model(model, val_dataloader, device, max_eval_steps=100)
-                        
-                        eval_data = {
-                            'step': step,
+                    # Log validation metrics to wandb
+                    if use_wandb:
+                        wandb.log({
                             'val_loss': val_loss,
                             'val_accuracy': val_accuracy
-                        }
-                        
-                        if use_wandb:
-                            wandb.log(eval_data)
-                        
-                        progress_bar.write(f"Validation: Loss={val_loss:.4f}, Acc={val_accuracy:.4f}")
-                        
-                        # Save metrics (use avg_loss if available, otherwise accumulated_loss)
-                        current_train_loss = avg_loss if step % log_every == 0 else accumulated_loss
-                        training_metrics['steps'].append(step)
-                        training_metrics['train_losses'].append(current_train_loss)
-                        training_metrics['val_losses'].append(val_loss)
-                        training_metrics['train_accuracies'].append(accuracy)
-                        training_metrics['val_accuracies'].append(val_accuracy)
-                        
-                        # Save best model
-                        if val_loss < best_val_loss:
-                            best_val_loss = val_loss
-                            save_checkpoint(model, optimizer, scheduler, step, val_loss, 
-                                          checkpoints_dir, f"{model_size}_best")
+                        }, step=step)
                     
-                    # Regular checkpoint saving
-                    save_every = int(model_config.get('save_every', 5000))
-                    if step % save_every == 0:
-                        save_checkpoint(model, optimizer, scheduler, step, accumulated_loss, 
-                                      checkpoints_dir, model_size)
+                    progress_bar.write(f"Validation: Loss={val_loss:.4f}, Acc={val_accuracy:.4f}")
                     
-                    # Reset accumulation
-                    accumulation_step = 0
-                    accumulated_loss = 0
-            
-            if step >= max_steps:
-                break
+                    # Save metrics for final results
+                    training_metrics['steps'].append(step)
+                    training_metrics['train_losses'].append(accumulated_loss)
+                    training_metrics['val_losses'].append(val_loss)
+                    training_metrics['train_accuracies'].append(accuracy)
+                    training_metrics['val_accuracies'].append(val_accuracy)
+                    
+                    # Save best model
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        save_checkpoint(model, optimizer, scheduler, step, val_loss, 
+                                      checkpoints_dir, f"{model_size}_best")
+                
+                # Regular checkpoint saving
+                save_every = int(model_config.get('save_every', 5000))
+                if step % save_every == 0:
+                    save_checkpoint(model, optimizer, scheduler, step, accumulated_loss, 
+                                  checkpoints_dir, model_size)
+                
+                # Reset accumulation
+                accumulation_step = 0
+                accumulated_loss = 0
         
         progress_bar.close()
         
