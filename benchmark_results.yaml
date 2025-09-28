@@ -1,0 +1,35 @@
+- actual_params: 6565760
+  avg_loss: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    MzMzQ4OqJUA=
+  avg_step_time: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    mpmZmeHHuD8=
+  gpu_memory_mb: 91.40576171875
+  memory_per_param_bytes: 62.124729505799785
+  memory_usage_mb: 389.0
+  model_name: nano
+  steps_per_second: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    qNgwWEKpJEA=
+  theoretical_params: 6564608
+  tokens_per_second: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    qNgwWEKp5EA=

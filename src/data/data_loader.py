@@ -48,7 +48,7 @@ class ChunkedC4Dataset(Dataset):
     
     def __init__(self, split='train', max_length=1024, tokenizer_name='gpt2', 
                  target_tokens_billions=1.0, cache_dir='data_cache', force_preprocess=False,
-                 max_file_size_gb=1.0, chunk_size_tokens=50_000_000):
+                 max_file_size_gb=1.0):
         """
         Args:
             split: Dataset split ('train', 'validation')
@@ -58,7 +58,6 @@ class ChunkedC4Dataset(Dataset):
             cache_dir: Directory to cache preprocessed data
             force_preprocess: Whether to force reprocessing even if cache exists
             max_file_size_gb: Maximum size per chunk file in GB
-            chunk_size_tokens: Number of tokens per chunk
         """
         self.split = split
         self.max_length = max_length
@@ -66,7 +65,6 @@ class ChunkedC4Dataset(Dataset):
         self.target_tokens_billions = target_tokens_billions
         self.cache_dir = cache_dir
         self.max_file_size_gb = max_file_size_gb
-        self.chunk_size_tokens = chunk_size_tokens
         
         # Create cache directory
         os.makedirs(cache_dir, exist_ok=True)
@@ -74,7 +72,7 @@ class ChunkedC4Dataset(Dataset):
         # Calculate optimal chunk size based on file size limit
         # uint16 = 2 bytes per token
         max_tokens_per_file = int((max_file_size_gb * 1024**3) / 2)
-        self.actual_chunk_size = min(chunk_size_tokens, max_tokens_per_file)
+        self.actual_chunk_size = max_tokens_per_file
         
         # Cache file pattern
         self.cache_prefix = f"c4_{split}_{tokenizer_name.replace('/', '_')}_{max_length}_{target_tokens_billions}B"

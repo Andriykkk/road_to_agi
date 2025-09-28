@@ -1,7 +1,7 @@
 models:
-  nano:
-    name: "nano"
-    params: 124_000 # ~124K parameters
+  tiny:
+    name: "tiny"
+    params: 6_500_000 # ~6.5M actual parameters (including embeddings)
 
     # Model architecture
     architecture:
@@ -13,11 +13,11 @@ models:
       dropout: 0.1
       vocab_size: 50257
 
-    # Data configuration
-    target_tokens_billions: 0.01 # 10M tokens to train on
+    # Data configuration (Chinchilla: ~20 tokens per parameter)
+    target_tokens_billions: 0.13 # 130M tokens (20x params)
 
     # Training hyperparameters
-    learning_rate: 3e-4
+    learning_rate: 2e-4
     batch_size: 8
     gradient_accumulation_steps: 4 # Effective batch size = 8 × 4 = 32
 
@@ -32,100 +32,160 @@ models:
     max_grad_norm: 1.0
 
     # Logging and saving
-    save_every: 500
-    eval_every: 250
-    log_every: 50
+    save_every: 1000
+    eval_every: 500
 
-  # micro:
-  #   name: "micro"
-  #   params: 1_000_000  # ~1M parameters
+  small:
+    name: "small"
+    params: 13_000_000 # ~13M actual parameters (including embeddings)
 
+    # Model architecture
+    architecture:
+      n_layers: 4
+      n_heads: 4
+      d_model: 128
+      d_ff: 512
+      max_seq_len: 512
+      dropout: 0.1
+      vocab_size: 50257
+
+    # Data configuration (Chinchilla: ~20 tokens per parameter)
+    target_tokens_billions: 0.27 # 270M tokens (20x params)
+
+    # Training hyperparameters
+    learning_rate: 1.5e-4
+    batch_size: 8
+    gradient_accumulation_steps: 4 # Effective batch size = 8 × 4 = 32
+
+    # Learning rate schedule (percentages of total training steps)
+    warmup_percent: 10 # Warmup for 10% of training
+    lr_scheduler: "cosine"
+    warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+    min_lr_ratio: 0.1 # End at 10% of peak LR
+
+    optimizer: "adamw"
+    weight_decay: 0.1
+    max_grad_norm: 1.0
+
+    # Logging and saving
+    save_every: 1500
+    eval_every: 750
+
+  # medium:
+  #   name: "medium"
+  #   params: 22_000_000 # ~22M actual parameters (including embeddings)
+
+  #   # Model architecture
   #   architecture:
-  #     n_layers: 4
-  #     n_heads: 4
-  #     d_model: 128
-  #     d_ff: 512
+  #     n_layers: 6
+  #     n_heads: 6
+  #     d_model: 192
+  #     d_ff: 768
   #     max_seq_len: 512
   #     dropout: 0.1
   #     vocab_size: 50257
 
-  #   target_tokens_billions: 0.1   # 100M tokens to train on
+  #   # Data configuration (Chinchilla: ~20 tokens per parameter)
+  #   target_tokens_billions: 0.44 # 440M tokens (20x params)
 
-  #   learning_rate: 2e-4
-  #   batch_size: 32
-  #   max_steps: 20000
-  #   warmup_steps: 1000
+  #   # Training hyperparameters
+  #   learning_rate: 1.2e-4
+  #   batch_size: 6
+  #   gradient_accumulation_steps: 6 # Effective batch size = 6 × 6 = 36
+
+  #   # Learning rate schedule (percentages of total training steps)
+  #   warmup_percent: 10 # Warmup for 10% of training
   #   lr_scheduler: "cosine"
+  #   warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+  #   min_lr_ratio: 0.1 # End at 10% of peak LR
+
   #   optimizer: "adamw"
   #   weight_decay: 0.1
   #   max_grad_norm: 1.0
 
-  #   save_every: 1000
-  #   eval_every: 500
-  #   log_every: 100
+  #   # Logging and saving
+  #   save_every: 2000
+  #   eval_every: 1000
 
-  # tiny:
-  #   name: "tiny"
-  #   params: 10_000_000  # ~10M parameters
+  # large:
+  #   name: "large"
+  #   params: 38_000_000 # ~38M actual parameters (including embeddings)
 
+  #   # Model architecture
   #   architecture:
   #     n_layers: 8
   #     n_heads: 8
   #     d_model: 256
   #     d_ff: 1024
-  #     max_seq_len: 1024
+  #     max_seq_len: 512
   #     dropout: 0.1
   #     vocab_size: 50257
 
-  #   target_tokens_billions: 1.0   # 1B tokens to train on
+  #   # Data configuration (Chinchilla: ~20 tokens per parameter)
+  #   target_tokens_billions: 0.76 # 760M tokens (20x params)
 
+  #   # Training hyperparameters
   #   learning_rate: 1e-4
-  #   batch_size: 16
-  #   max_steps: 50000
-  #   warmup_steps: 2000
+  #   batch_size: 4
+  #   gradient_accumulation_steps: 8 # Effective batch size = 4 × 8 = 32
+
+  #   # Learning rate schedule (percentages of total training steps)
+  #   warmup_percent: 10 # Warmup for 10% of training
   #   lr_scheduler: "cosine"
+  #   warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+  #   min_lr_ratio: 0.1 # End at 10% of peak LR
+
   #   optimizer: "adamw"
   #   weight_decay: 0.1
   #   max_grad_norm: 1.0
 
-  #   save_every: 2000
-  #   eval_every: 1000
-  #   log_every: 200
+  #   # Logging and saving
+  #   save_every: 3000
+  #   eval_every: 1500
 
-  # small:
-  #   name: "small"
-  #   params: 100_000_000  # ~100M parameters
+  # xlarge:
+  #   name: "xlarge"
+  #   params: 125_000_000 # ~125M actual parameters (≈ GPT-2 small)
 
+  #   # Model architecture
   #   architecture:
   #     n_layers: 12
   #     n_heads: 12
-  #     d_model: 512
-  #     d_ff: 2048
+  #     d_model: 768
+  #     d_ff: 3072
   #     max_seq_len: 1024
   #     dropout: 0.1
   #     vocab_size: 50257
 
-  #   target_tokens_billions: 10.0  # 10B tokens to train on
+  #   # Data configuration (Chinchilla: ~20 tokens per parameter)
+  #   target_tokens_billions: 2.5 # 2.5B tokens (20x params)
 
-  #   learning_rate: 5e-5
-  #   batch_size: 8
-  #   max_steps: 100000
-  #   warmup_steps: 5000
+  #   # Training hyperparameters
+  #   learning_rate: 6e-5
+  #   batch_size: 2
+  #   gradient_accumulation_steps: 16 # Effective batch size = 2 × 16 = 32
+
+  #   # Learning rate schedule (percentages of total training steps)
+  #   warmup_percent: 10 # Warmup for 10% of training
   #   lr_scheduler: "cosine"
+  #   warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+  #   min_lr_ratio: 0.1 # End at 10% of peak LR
+
   #   optimizer: "adamw"
   #   weight_decay: 0.1
   #   max_grad_norm: 1.0
 
-  #   save_every: 5000
-  #   eval_every: 2500
-  #   log_every: 500
+  #   # Logging and saving
+  #   save_every: 10000
+  #   eval_every: 5000
 
-  # medium:
-  #   name: "medium"
-  #   params: 500_000_000  # ~500M parameters
+  # large:
+  #   name: "large"
+  #   params: 320_000_000 # ~320M parameters
 
+  #   # Model architecture
   #   architecture:
-  #     n_layers: 24
+  #     n_layers: 18
   #     n_heads: 16
   #     d_model: 1024
   #     d_ff: 4096
@@ -133,53 +193,24 @@ models:
   #     dropout: 0.1
   #     vocab_size: 50257
 
-  #   target_tokens_billions: 50.0  # 50B tokens to train on
+  #   # Data configuration (Chinchilla: ~20 tokens per parameter)
+  #   target_tokens_billions: 6.4 # 6.4B tokens (20x params)
 
-  #   learning_rate: 3e-5
-  #   batch_size: 4
-  #   max_steps: 200000
-  #   warmup_steps: 10000
+  #   # Training hyperparameters
+  #   learning_rate: 4e-5
+  #   batch_size: 1
+  #   gradient_accumulation_steps: 32 # Effective batch size = 1 × 32 = 32
+
+  #   # Learning rate schedule (percentages of total training steps)
+  #   warmup_percent: 10 # Warmup for 10% of training
   #   lr_scheduler: "cosine"
+  #   warmup_start_lr_ratio: 0.1 # Start warmup at 10% of peak LR
+  #   min_lr_ratio: 0.1 # End at 10% of peak LR
+
   #   optimizer: "adamw"
   #   weight_decay: 0.1
   #   max_grad_norm: 1.0
 
-  #   save_every: 10000
-  #   eval_every: 5000
-  #   log_every: 1000
-
-  # large:
-  #   name: "large"
-  #   params: 1_000_000_000  # ~1B parameters
-
-  #   architecture:
-  #     n_layers: 48
-  #     n_heads: 32
-  #     d_model: 2048
-  #     d_ff: 8192
-  #     max_seq_len: 1024
-  #     dropout: 0.1
-  #     vocab_size: 50257
-
-  #   target_tokens_billions: 200.0 # 200B tokens to train on
-
-  #   learning_rate: 1e-5
-  #   batch_size: 2
-  #   max_steps: 500000
-  #   warmup_steps: 20000
-  #   lr_scheduler: "cosine"
-  #   optimizer: "adamw"
-  #   weight_decay: 0.1
-  #   max_grad_norm: 1.0
-
+  #   # Logging and saving
   #   save_every: 20000
   #   eval_every: 10000
-  #   log_every: 2000
-# Configuration Philosophy:
-# - All hyperparameters are model-specific and centralized here
-# - target_tokens_billions: How much data each model will train on (with distributed sampling)
-# - Dataset preprocessing amount is set in data.yaml (should be >= max target_tokens)
-# - Scaling follows compute-optimal relationships
-# - Learning rates decrease with model size
-# - Training steps increase with model size
-# - Logging frequency scales with training length

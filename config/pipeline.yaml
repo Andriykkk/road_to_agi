@@ -3,9 +3,7 @@
 
 # Models to train (can specify multiple or single)
 models:
-  - "nano"
-  # - "micro"
-  # - "tiny"
+  - "tiny"
   # - "small"
   # - "medium"
   # - "large"

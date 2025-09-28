@@ -35,7 +35,6 @@ def test_chunked_dataset():
         target_tokens_billions=0.01,  # Small test - 10M tokens
         cache_dir='data_cache',
         max_file_size_gb=0.05,  # 50MB max per file for testing
-        chunk_size_tokens=1_000_000  # 1M tokens per chunk
     )
     
     after_creation = get_memory_usage()

@@ -9,7 +9,7 @@ use_preprocessed: true # Whether to use preprocessed cached data
 
 # How much data to preprocess and cache (once)
 # This should be the maximum any model will need
-preprocess_tokens_billions: 0.3 # Process 300B tokens from C4
+preprocess_tokens_billions: 7 # Process 300B tokens from C4
 max_sequence_length: 1024 # Maximum sequence length for preprocessing
 
 # Multiprocessing settings for tokenization
