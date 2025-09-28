@@ -18,30 +18,27 @@ warnings.filterwarnings("ignore", message="Token indices sequence length is long
 warnings.filterwarnings("ignore")
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
-def tokenize_batch(args):
-    """Tokenize batch and concatenate with EOS tokens"""
+def tokenize_text(args):
+    """Tokenize single text and add EOS token"""
     import warnings
     import os
     import numpy as np
     warnings.filterwarnings("ignore")
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     
-    texts, tokenizer_name = args
+    text, tokenizer_name = args
     
     # Create tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Tokenize all texts and join with EOS - use lists first, then convert to numpy
-    all_tokens = []
-    for text in texts:
-        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=10000000000)
-        all_tokens.extend(tokens)
-        all_tokens.append(tokenizer.eos_token_id)  # Add EOS between documents
+    # Tokenize text and add EOS
+    tokens = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=10000000000)
+    tokens.append(tokenizer.eos_token_id)  # Add EOS after document
     
     # Convert to numpy array for memory efficiency - use uint16 since vocab size is ~50k
-    return np.array(all_tokens, dtype=np.uint16)
+    return np.array(tokens, dtype=np.uint16)
 
 class ChunkedC4Dataset(Dataset):
     """Memory-efficient C4 dataset that stores data in chunks and loads on-demand"""
@@ -189,55 +186,60 @@ class ChunkedC4Dataset(Dataset):
         
         # Target tokens and processing settings
         target_tokens = int(self.target_tokens_billions * 1e9)
-        batch_size = 1000
-        num_processes = min(cpu_count(), 32)
+        num_processes = min(cpu_count(), 32)  # Don't use too many processes
         
         # Load processing config if available
         try:
             with open('config/data.yaml', 'r') as f:
                 data_config = yaml.safe_load(f)
             num_processes = min(data_config.get('max_processes', num_processes), 32)
-            batch_size = data_config.get('batch_size', batch_size)
         except:
             pass
         
         print(f"Target: {target_tokens:,} tokens, chunk size: {self.actual_chunk_size:,}")
-        print(f"Using {num_processes} processes, batch size {batch_size}")
+        print(f"Using {num_processes} processes for parallel tokenization")
         
-        # Process data in chunks
+        # Process data using streaming with multiprocessing
         current_chunk_tokens = []
         chunk_idx = 0
-        current_batch = []
         total_processed = 0
+        texts_to_process = []
         
-        pbar = tqdm(total=target_tokens, desc="Processing", unit="tokens", unit_scale=True)
+        pbar = tqdm(total=target_tokens, desc="Processing tokens", unit="tok")
         
         with Pool(num_processes) as pool:
             for sample in dataset:
-                current_batch.append(sample['text'])
+                texts_to_process.append((sample['text'], self.tokenizer_name))
                 
-                if len(current_batch) >= batch_size:
-                    # Process batch
-                    batch_tokens = tokenize_batch((current_batch, self.tokenizer_name))
-                    current_batch = []
+                # Process when we have enough texts for good parallelization
+                if len(texts_to_process) >= num_processes * 4:  # 4x processes for better utilization
+                    # Process texts in parallel
+                    token_results = pool.map(tokenize_text, texts_to_process)
+                    texts_to_process = []
                     
-                    # Add to current chunk
-                    if len(current_chunk_tokens) == 0:
-                        current_chunk_tokens = batch_tokens
-                    else:
-                        current_chunk_tokens = np.concatenate([current_chunk_tokens, batch_tokens])
-                    
-                    # Save chunk if it's large enough
-                    while len(current_chunk_tokens) >= self.actual_chunk_size:
-                        chunk_data = current_chunk_tokens[:self.actual_chunk_size]
-                        remaining_data = current_chunk_tokens[self.actual_chunk_size:]
+                    # Combine results and save chunks
+                    for tokens in token_results:
+                        if len(current_chunk_tokens) == 0:
+                            current_chunk_tokens = tokens
+                        else:
+                            current_chunk_tokens = np.concatenate([current_chunk_tokens, tokens])
                         
-                        self._save_chunk(chunk_data, chunk_idx)
-                        chunk_idx += 1
+                        # Update progress bar immediately after adding tokens
+                        pbar.update(len(tokens))
+                        total_processed += len(tokens)
                         
-                        current_chunk_tokens = remaining_data
-                        total_processed += len(chunk_data)
-                        pbar.update(len(chunk_data))
+                        # Save chunk if it's large enough
+                        while len(current_chunk_tokens) >= self.actual_chunk_size:
+                            chunk_data = current_chunk_tokens[:self.actual_chunk_size]
+                            remaining_data = current_chunk_tokens[self.actual_chunk_size:]
+                            
+                            self._save_chunk(chunk_data, chunk_idx)
+                            chunk_idx += 1
+                            
+                            current_chunk_tokens = remaining_data
+                            
+                            if total_processed >= target_tokens:
+                                break
                         
                         if total_processed >= target_tokens:
                             break
@@ -245,24 +247,23 @@ class ChunkedC4Dataset(Dataset):
                     if total_processed >= target_tokens:
                         break
             
-            # Process remaining batch
-            if current_batch and total_processed < target_tokens:
-                batch_tokens = tokenize_batch((current_batch, self.tokenizer_name))
-                if len(current_chunk_tokens) == 0:
-                    current_chunk_tokens = batch_tokens
-                else:
-                    current_chunk_tokens = np.concatenate([current_chunk_tokens, batch_tokens])
+            # Process remaining texts
+            if texts_to_process and total_processed < target_tokens:
+                token_results = pool.map(tokenize_text, texts_to_process)
+                
+                for tokens in token_results:
+                    if len(current_chunk_tokens) == 0:
+                        current_chunk_tokens = tokens
+                    else:
+                        current_chunk_tokens = np.concatenate([current_chunk_tokens, tokens])
+                    
+                    # Update progress bar immediately
+                    pbar.update(len(tokens))
+                    total_processed += len(tokens)
         
         # Save final chunk if it has data
         if len(current_chunk_tokens) > 0:
-            # Trim to target if needed
-            if total_processed + len(current_chunk_tokens) > target_tokens:
-                remaining_needed = target_tokens - total_processed
-                current_chunk_tokens = current_chunk_tokens[:remaining_needed]
-            
             self._save_chunk(current_chunk_tokens, chunk_idx)
-            total_processed += len(current_chunk_tokens)
-            pbar.update(len(current_chunk_tokens))
         
         pbar.close()
         self.total_tokens = total_processed
