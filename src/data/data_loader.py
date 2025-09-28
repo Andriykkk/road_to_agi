@@ -18,27 +18,31 @@ warnings.filterwarnings("ignore", message="Token indices sequence length is long
 warnings.filterwarnings("ignore")
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
-def tokenize_text(args):
-    """Tokenize single text and add EOS token"""
+def tokenize_texts_batch(args):
+    """Tokenize batch of texts efficiently - create tokenizer once per process"""
     import warnings
     import os
     import numpy as np
     warnings.filterwarnings("ignore")
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     
-    text, tokenizer_name = args
+    texts, tokenizer_name = args
     
-    # Create tokenizer
+    # Create tokenizer once per process
+    from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Tokenize text and add EOS
-    tokens = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=10000000000)
-    tokens.append(tokenizer.eos_token_id)  # Add EOS after document
+    # Process all texts in this batch
+    all_tokens = []
+    for text in texts:
+        tokens = tokenizer.encode(text, add_special_tokens=False, truncation=False, max_length=10000000000)
+        all_tokens.extend(tokens)
+        all_tokens.append(tokenizer.eos_token_id)  # Add EOS after document
     
-    # Convert to numpy array for memory efficiency - use uint16 since vocab size is ~50k
-    return np.array(tokens, dtype=np.uint16)
+    # Convert to numpy array for memory efficiency
+    return np.array(all_tokens, dtype=np.uint16)
 
 class ChunkedC4Dataset(Dataset):
     """Memory-efficient C4 dataset that stores data in chunks and loads on-demand"""
@@ -186,13 +190,13 @@ class ChunkedC4Dataset(Dataset):
         
         # Target tokens and processing settings
         target_tokens = int(self.target_tokens_billions * 1e9)
-        num_processes = min(cpu_count(), 32)  # Don't use too many processes
+        num_processes = cpu_count()  # Use all available CPU cores
         
         # Load processing config if available
         try:
             with open('config/data.yaml', 'r') as f:
                 data_config = yaml.safe_load(f)
-            num_processes = min(data_config.get('max_processes', num_processes), 32)
+            num_processes = min(data_config.get('max_processes', num_processes), cpu_count())
         except:
             pass
         
@@ -203,19 +207,28 @@ class ChunkedC4Dataset(Dataset):
         current_chunk_tokens = []
         chunk_idx = 0
         total_processed = 0
-        texts_to_process = []
+        texts_buffer = []
         
         pbar = tqdm(total=target_tokens, desc="Processing tokens", unit="tok")
         
+        # Batch size per process - larger batches reduce tokenizer creation overhead
+        batch_size_per_process = 100  # Each process handles 100 texts at once
+        
         with Pool(num_processes) as pool:
             for sample in dataset:
-                texts_to_process.append((sample['text'], self.tokenizer_name))
+                texts_buffer.append(sample['text'])
                 
-                # Process when we have enough texts for good parallelization
-                if len(texts_to_process) >= num_processes * 4:  # 4x processes for better utilization
-                    # Process texts in parallel
-                    token_results = pool.map(tokenize_text, texts_to_process)
-                    texts_to_process = []
+                # Process when we have enough texts for all cores
+                if len(texts_buffer) >= num_processes * batch_size_per_process:
+                    # Split texts into batches for each process
+                    batches = []
+                    for i in range(0, len(texts_buffer), batch_size_per_process):
+                        batch = texts_buffer[i:i + batch_size_per_process]
+                        batches.append((batch, self.tokenizer_name))
+                    
+                    # Process batches in parallel - each process gets ~100 texts
+                    token_results = pool.map(tokenize_texts_batch, batches)
+                    texts_buffer = []
                     
                     # Combine results and save chunks
                     for tokens in token_results:
@@ -248,8 +261,14 @@ class ChunkedC4Dataset(Dataset):
                         break
             
             # Process remaining texts
-            if texts_to_process and total_processed < target_tokens:
-                token_results = pool.map(tokenize_text, texts_to_process)
+            if texts_buffer and total_processed < target_tokens:
+                # Split remaining texts into batches
+                batches = []
+                for i in range(0, len(texts_buffer), batch_size_per_process):
+                    batch = texts_buffer[i:i + batch_size_per_process]
+                    batches.append((batch, self.tokenizer_name))
+                
+                token_results = pool.map(tokenize_texts_batch, batches)
                 
                 for tokens in token_results:
                     if len(current_chunk_tokens) == 0:
